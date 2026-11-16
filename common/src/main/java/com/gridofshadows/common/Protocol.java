@@ -12,9 +12,9 @@ public final class Protocol {
     private Protocol() {}
 
     public static final byte C_HELLO = 1, C_INPUT = 2, C_ACTION = 3;
-    public static final byte S_WELCOME = (byte) 0x81, S_BLOCKS = (byte) 0x82, S_STATE = (byte) 0x83;
-    public static final int ACT_BREAK = 1, ACT_PLACE = 2;
-    public static final int SND_STEP = 1;
+    public static final byte S_WELCOME = (byte) 0x81, S_BLOCKS = (byte) 0x82, S_STATE = (byte) 0x83, S_INV = (byte) 0x84;
+    public static final int ACT_HIT = 1, ACT_PLACE = 2;
+    public static final int SND_STEP = 1, SND_HIT = 2;
     public static final int MAX_NAME = 16, MAX_ENTITIES = 255, MAX_SOUNDS = 255;
 
     public static short angleToShort(float a) { return (short) Math.round(a * 10000f); }
@@ -146,7 +146,16 @@ public final class Protocol {
         return b.array();
     }
 
-    /** Devuelve Welcome, Blocks o State; null si el mensaje es inválido. */
+    /** Inventario completo (solo se envía a su dueño): n ranuras de (objeto, cantidad). */
+    public static byte[] inventory(Inventory inv) {
+        int n = inv.item.length;
+        ByteBuffer b = ByteBuffer.allocate(2 + n * 3);
+        b.put(S_INV).put((byte) n);
+        for (int i = 0; i < n; i++) b.put(inv.item[i]).putShort((short) inv.count[i]);
+        return b.array();
+    }
+
+    /** Devuelve Welcome, Blocks, State o Inventory; null si el mensaje es inválido. */
     public static Object decodeServer(byte[] data) {
         try {
             ByteBuffer b = ByteBuffer.wrap(data);
@@ -176,6 +185,16 @@ public final class Protocol {
                     for (int i = 0; i < ne; i++) { s.entId[i] = ids[i]; s.entX[i] = ex[i]; s.entY[i] = ey[i]; s.entAngle[i] = ea[i]; }
                     for (int i = 0; i < ns; i++) { s.sndKind[i] = b.get(); s.sndAngle[i] = b.getShort(); s.sndVol[i] = b.get() & 0xFF; }
                     return s;
+                }
+                case S_INV: {
+                    int n = b.get() & 0xFF;
+                    Inventory inv = new Inventory();
+                    for (int i = 0; i < n; i++) {
+                        byte it = b.get();
+                        int c = b.getShort();
+                        if (i < inv.item.length) { inv.item[i] = it; inv.count[i] = Math.max(0, c); }
+                    }
+                    return inv;
                 }
                 default:
                     return null;

@@ -11,6 +11,7 @@ import com.badlogic.gdx.math.Vector2;
 import com.badlogic.gdx.utils.viewport.ExtendViewport;
 import com.gridofshadows.common.Block;
 import com.gridofshadows.common.Const;
+import com.gridofshadows.common.Inventory;
 import com.gridofshadows.common.Predictor;
 import com.gridofshadows.common.Protocol;
 import com.gridofshadows.common.Vision;
@@ -32,7 +33,7 @@ public final class GridOfShadows extends ApplicationAdapter {
 
     private static final Color FOG = new Color(0.047f, 0.063f, 0.082f, 1f);
     private static final Color GROUND_A = new Color(0x1d2a33ff), GROUND_B = new Color(0x223039ff);
-    private static final Color LANTERN = new Color(0xf2d48aff), ENEMY = new Color(0xd4574eff);
+    private static final Color LANTERN = new Color(0xf2d48aff), ENEMY = new Color(0xd4574eff), HIT_SOUND = new Color(0xe8793aff);
     private static final Color[] TILE = new Color[8];
 
     static {
@@ -50,8 +51,9 @@ public final class GridOfShadows extends ApplicationAdapter {
 
     private static final class Ping {
         final float angle, vol, born;
+        final int kind;
 
-        Ping(float angle, float vol, float born) { this.angle = angle; this.vol = vol; this.born = born; }
+        Ping(float angle, float vol, float born, int kind) { this.angle = angle; this.vol = vol; this.born = born; this.kind = kind; }
     }
 
     private final NetClient net;
@@ -65,9 +67,10 @@ public final class GridOfShadows extends ApplicationAdapter {
     };
 
     private ShapeRenderer sr;
-    private OrthographicCamera cam;
+    private OrthographicCamera cam, hudCam;
     private ExtendViewport view;
     private final Vector2 tmp = new Vector2();
+    private int screenH = 1;
 
     private Phase phase = Phase.CONNECTING;
     private VoxelWorld world;
@@ -75,7 +78,10 @@ public final class GridOfShadows extends ApplicationAdapter {
 
     private Predictor pred;                                // predicción local y reconciliación
     private float renderX, renderY, aim, acc, time;
-    private int stamp;
+    private int stamp, hoverX, hoverY;
+    private boolean hoverInReach;
+    private float swingUntil;
+    private Inventory inv = new Inventory();
     private final Map<Integer, Remote> remotes = new HashMap<>();
     private final ArrayList<Ping> pings = new ArrayList<>();
     private float[] dist = new float[0];
@@ -92,6 +98,7 @@ public final class GridOfShadows extends ApplicationAdapter {
     public void create() {
         sr = new ShapeRenderer();
         cam = new OrthographicCamera();
+        hudCam = new OrthographicCamera();
         view = new ExtendViewport(40f, 22.5f, cam);
         net.connect(url, listener);
     }
@@ -99,6 +106,8 @@ public final class GridOfShadows extends ApplicationAdapter {
     @Override
     public void resize(int width, int height) {
         view.update(width, height, false);
+        screenH = height;
+        hudCam.setToOrtho(false, width, height);
     }
 
     @Override
@@ -117,11 +126,15 @@ public final class GridOfShadows extends ApplicationAdapter {
             pred = new Predictor(world, w.x, w.y);
             renderX = w.x;
             renderY = w.y;
+            inv = new Inventory();
             phase = Phase.PLAYING;
         } else if (msg instanceof Protocol.Blocks b && world != null) {
             for (int i = 0; i < b.count; i++) world.set(b.x[i], b.y[i], Const.LAYER_OBSTACLE, b.id[i]);
         } else if (msg instanceof Protocol.State s && world != null) {
             onState(s);
+        } else if (msg instanceof Inventory mine && pred != null) {
+            inv = mine;                  // el servidor es la autoridad sobre lo que llevas
+            pred.setLoad(mine.load());   // y la carga te frena igual en la predicción
         }
     }
 
@@ -153,7 +166,7 @@ public final class GridOfShadows extends ApplicationAdapter {
             if (it.next().stamp != stamp) it.remove();
         }
         for (int i = 0; i < s.nSnd; i++) {
-            pings.add(new Ping(Protocol.shortToAngle(s.sndAngle[i]), s.sndVol[i] / 255f, time));
+            pings.add(new Ping(Protocol.shortToAngle(s.sndAngle[i]), s.sndVol[i] / 255f, time, s.sndKind[i]));
         }
     }
 
@@ -183,15 +196,18 @@ public final class GridOfShadows extends ApplicationAdapter {
         renderX = pred.prevX + (pred.me.x - pred.prevX) * f;
         renderY = pred.prevY + (pred.me.y - pred.prevY) * f;
 
-        // Clic izquierdo rompe, clic derecho coloca madera; el servidor valida alcance y reglas
+        // Casilla bajo el cursor y si está al alcance (el servidor lo valida de nuevo)
+        hoverX = (int) Math.floor(mouseX);
+        hoverY = (int) Math.floor(mouseY);
+        float hx = hoverX + 0.5f - renderX, hy = hoverY + 0.5f - renderY;
+        hoverInReach = hx * hx + hy * hy <= Const.REACH * Const.REACH;
+
+        // Clic izquierdo golpea (árboles y rocas dan recursos), clic derecho construye con madera
         boolean left = Gdx.input.isButtonJustPressed(Input.Buttons.LEFT);
         boolean right = Gdx.input.isButtonJustPressed(Input.Buttons.RIGHT);
-        if (left || right) {
-            int tx = (int) Math.floor(mouseX), ty = (int) Math.floor(mouseY);
-            float dx = tx + 0.5f - renderX, dy = ty + 0.5f - renderY;
-            if (dx * dx + dy * dy <= Const.REACH * Const.REACH) {
-                net.send(Protocol.action(left ? Protocol.ACT_BREAK : Protocol.ACT_PLACE, tx, ty));
-            }
+        if (left) swingUntil = time + 0.15f;
+        if ((left || right) && hoverInReach) {
+            net.send(Protocol.action(left ? Protocol.ACT_HIT : Protocol.ACT_PLACE, hoverX, hoverY));
         }
 
         for (Remote r : remotes.values()) {
@@ -240,8 +256,15 @@ public final class GridOfShadows extends ApplicationAdapter {
         drawFalloff(n);
         drawFog(n);
         drawWalls(n);
+        drawCursor();
         drawSelf();
+        drawSwing();
         drawPings();
+        sr.end();
+
+        sr.setProjectionMatrix(hudCam.combined);
+        sr.begin(ShapeRenderer.ShapeType.Filled);
+        Hud.draw(sr, inv, screenH);
         sr.end();
     }
 
@@ -362,21 +385,44 @@ public final class GridOfShadows extends ApplicationAdapter {
         sr.rectLine(renderX, renderY, renderX + (float) Math.cos(aim) * 0.55f, renderY + (float) Math.sin(aim) * 0.55f, 0.1f);
     }
 
-    /** Sonido de pasos ocultos: arcos alrededor del jugador, hacia donde suena y más gruesos si está cerca. */
+    private void drawCursor() {
+        if (!hoverInReach) return;
+        float t = 0.06f;
+        sr.setColor(1f, 1f, 1f, 0.55f);
+        sr.rect(hoverX, hoverY, 1f, t);
+        sr.rect(hoverX, hoverY + 1f - t, 1f, t);
+        sr.rect(hoverX, hoverY + t, t, 1f - 2 * t);
+        sr.rect(hoverX + 1f - t, hoverY + t, t, 1f - 2 * t);
+    }
+
+    /** Destello corto delante del jugador al golpear. */
+    private void drawSwing() {
+        if (time >= swingUntil) return;
+        sr.setColor(1f, 1f, 1f, 0.5f * (swingUntil - time) / 0.15f);
+        arc(0.95f, 0.05f, aim - 0.5f, aim + 0.5f, 8);
+    }
+
+    /** Sonidos fuera de la vista: arcos alrededor del jugador hacia donde suenan. Ámbar = pasos, naranja = golpes. */
     private void drawPings() {
         for (Ping p : pings) {
             float age = time - p.born, alpha = (1f - age / 0.9f) * (0.3f + 0.7f * p.vol);
             if (alpha <= 0f) continue;
-            sr.setColor(LANTERN.r, LANTERN.g, LANTERN.b, alpha);
-            float r = 1.6f + age * 0.5f, w = 0.08f + 0.12f * p.vol, a0 = p.angle - 0.28f, a1 = p.angle + 0.28f;
-            int seg = 6;
-            for (int i = 0; i < seg; i++) {
-                float s = a0 + (a1 - a0) * i / seg, e = a0 + (a1 - a0) * (i + 1) / seg;
-                float cs = (float) Math.cos(s), ss = (float) Math.sin(s), ce = (float) Math.cos(e), se = (float) Math.sin(e);
-                float ri = r - w, ro = r + w;
-                sr.triangle(renderX + cs * ri, renderY + ss * ri, renderX + cs * ro, renderY + ss * ro, renderX + ce * ro, renderY + se * ro);
-                sr.triangle(renderX + cs * ri, renderY + ss * ri, renderX + ce * ro, renderY + se * ro, renderX + ce * ri, renderY + se * ri);
-            }
+            boolean hitKind = p.kind == Protocol.SND_HIT;
+            Color c = hitKind ? HIT_SOUND : LANTERN;
+            sr.setColor(c.r, c.g, c.b, alpha);
+            float spread = hitKind ? 0.42f : 0.28f;
+            arc(1.6f + age * 0.5f, 0.08f + 0.12f * p.vol, p.angle - spread, p.angle + spread, 6);
+        }
+    }
+
+    /** Arco relleno centrado en el jugador, de radio r y semi-grosor w, entre los ángulos a0 y a1. */
+    private void arc(float r, float w, float a0, float a1, int seg) {
+        float ri = r - w, ro = r + w;
+        for (int i = 0; i < seg; i++) {
+            float s = a0 + (a1 - a0) * i / seg, e = a0 + (a1 - a0) * (i + 1) / seg;
+            float cs = (float) Math.cos(s), ss = (float) Math.sin(s), ce = (float) Math.cos(e), se = (float) Math.sin(e);
+            sr.triangle(renderX + cs * ri, renderY + ss * ri, renderX + cs * ro, renderY + ss * ro, renderX + ce * ro, renderY + se * ro);
+            sr.triangle(renderX + cs * ri, renderY + ss * ri, renderX + ce * ro, renderY + se * ro, renderX + ce * ri, renderY + se * ri);
         }
     }
 }

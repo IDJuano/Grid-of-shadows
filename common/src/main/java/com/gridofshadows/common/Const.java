@@ -22,4 +22,12 @@ public final class Const {
     public static final float HEARING_RANGE = 11f;
     public static final float STRIDE = 0.9f;                     // distancia entre pasos audibles
     public static final int MAX_PENDING_INPUTS = 6;
+
+    // Fase 3: recolección, inventario y construcción
+    public static final int ACTION_COOLDOWN_TICKS = 6;           // 300 ms entre golpes o colocaciones
+    public static final int PLACE_COST_WOOD = 5;
+    public static final int INV_SLOTS = 24;                      // cuadrícula de 6 x 4
+    public static final int LOAD_CAPACITY = 400;                 // con esta carga la penalización es máxima
+    public static final float MIN_SPEED_FACTOR = 0.6f;           // velocidad relativa con carga máxima
+    public static final float HIT_HEARING_RANGE = 16f;           // un golpe de hacha se oye más lejos que un paso
 }

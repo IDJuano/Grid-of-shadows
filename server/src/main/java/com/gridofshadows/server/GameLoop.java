@@ -2,6 +2,8 @@ package com.gridofshadows.server;
 
 import com.gridofshadows.common.Block;
 import com.gridofshadows.common.Const;
+import com.gridofshadows.common.Inventory;
+import com.gridofshadows.common.Items;
 import com.gridofshadows.common.Movement;
 import com.gridofshadows.common.Protocol;
 import com.gridofshadows.common.Vision;
@@ -38,6 +40,7 @@ public final class GameLoop {
     private final Map<Conn, Player> byConn = new HashMap<>();
     private final List<Entity> entities = new ArrayList<>();
     private final Map<Integer, Byte> edits = new LinkedHashMap<>();   // cambios respecto al mundo generado
+    private final Map<Integer, Integer> damage = new HashMap<>();     // golpes acumulados por casilla
     private int nextId = 0, tick;
     private volatile boolean running;
 
@@ -98,7 +101,10 @@ public final class GameLoop {
             else if (e instanceof Bot b) thinkBot(b);
         }
         for (Entity e : entities) if (e instanceof Player p) sendState(p);
-        for (Entity e : entities) e.stepped = false;
+        for (Entity e : entities) {
+            e.stepped = false;
+            e.hitSound = false;
+        }
     }
 
     private void handle(Cmd cmd) {
@@ -136,6 +142,7 @@ public final class GameLoop {
         w.fov = p.fov; w.range = p.range; w.x = p.x; w.y = p.y;
         c.send(Protocol.welcome(w));
         sendAllEdits(c);
+        c.send(Protocol.inventory(p.inv));
     }
 
     private void doLeave(Conn c) {
@@ -157,7 +164,8 @@ public final class GameLoop {
         while (budget-- > 0 && !p.pending.isEmpty()) {
             Protocol.Input in = p.pending.pollFirst();
             p.angle = Protocol.shortToAngle(in.angle);
-            stride(p, Movement.move(world, p, in.mx, in.my, Const.PLAYER_SPEED, Const.TICK_DT));
+            float speed = Const.PLAYER_SPEED * Inventory.speedFactor(p.inv.load());   // la carga frena
+            stride(p, Movement.move(world, p, in.mx, in.my, speed, Const.TICK_DT));
             p.ackSeq = in.seq;
         }
     }
@@ -185,17 +193,40 @@ public final class GameLoop {
 
     private void doAction(Conn c, Protocol.Action a) {
         Player p = byConn.get(c);
-        if (p == null || tick - p.lastActionTick < 4) return;                       // 200 ms entre acciones
+        if (p == null || tick - p.lastActionTick < Const.ACTION_COOLDOWN_TICKS) return;
         int tx = a.x, ty = a.y;
         if (tx < 1 || ty < 1 || tx >= world.width - 1 || ty >= world.height - 1) return;   // el borde no se toca
         float dx = tx + 0.5f - p.x, dy = ty + 0.5f - p.y, reach = Const.REACH + 0.5f;     // +0.5 por latencia
         if (dx * dx + dy * dy > reach * reach) return;
-        byte cur = world.get(tx, ty, Const.LAYER_OBSTACLE), next;
-        if (a.kind == Protocol.ACT_BREAK && Block.breakable(cur)) next = Block.AIR;
-        else if (a.kind == Protocol.ACT_PLACE && cur == Block.AIR && !overlapsAnyone(tx, ty)) next = Block.WOOD;
-        else return;
+        byte cur = world.get(tx, ty, Const.LAYER_OBSTACLE);
+        if (a.kind == Protocol.ACT_HIT) hit(p, tx, ty, cur);
+        else if (a.kind == Protocol.ACT_PLACE) place(p, tx, ty, cur);
+    }
+
+    /** Golpe a mano: cada golpe suelta recursos y acumula daño; al último, el bloque desaparece. */
+    private void hit(Player p, int tx, int ty, byte cur) {
+        int need = Block.hitsToBreak(cur);
+        if (need == 0) return;                                       // piedra y lecho de roca: no con las manos
+        byte drop = Block.dropItem(cur);
+        int per = Block.dropPerHit(cur);
+        if (drop != Items.NONE && p.inv.space(drop) < per) return;   // inventario lleno: el golpe no se gasta
         p.lastActionTick = tick;
-        setBlock(tx, ty, next);
+        p.hitSound = true;
+        if (drop != Items.NONE) {
+            p.inv.add(drop, per);
+            p.invDirty = true;
+        }
+        int key = ty * world.width + tx;
+        int hits = damage.merge(key, 1, Integer::sum);
+        if (hits >= need) setBlock(tx, ty, Block.AIR);
+    }
+
+    /** Construir con madera: el coste se cobra solo si el bloque se coloca de verdad. */
+    private void place(Player p, int tx, int ty, byte cur) {
+        if (cur != Block.AIR || overlapsAnyone(tx, ty) || !p.inv.remove(Items.WOOD, Const.PLACE_COST_WOOD)) return;
+        p.lastActionTick = tick;
+        p.invDirty = true;
+        setBlock(tx, ty, Block.WOOD);
     }
 
     private boolean overlapsAnyone(int tx, int ty) {
@@ -209,6 +240,7 @@ public final class GameLoop {
     private void setBlock(int x, int y, byte b) {
         world.set(x, y, Const.LAYER_OBSTACLE, b);
         edits.put(y * world.width + x, b);
+        damage.remove(y * world.width + x);
         byte[] msg = Protocol.blocks(1, new int[]{x}, new int[]{y}, new byte[]{b});
         for (Player q : byConn.values()) q.conn.send(msg);   // TODO: solo a quien tenga el chunk cargado
     }
@@ -249,19 +281,28 @@ public final class GameLoop {
                     s.entId[i] = e.id; s.entX[i] = e.x; s.entY[i] = e.y;
                     s.entAngle[i] = Protocol.angleToShort(e.angle);
                 }
-            } else if (e.stepped && s.nSnd < Protocol.MAX_SOUNDS) {
+            } else {
                 float dx = e.x - p.x, dy = e.y - p.y, d = (float) Math.sqrt(dx * dx + dy * dy);
-                if (d <= Const.HEARING_RANGE) {
-                    float sector = TWO_PI / 16;
-                    float a = Math.round((float) Math.atan2(dy, dx) / sector) * sector;
-                    int i = s.nSnd++;
-                    s.sndKind[i] = Protocol.SND_STEP;
-                    s.sndAngle[i] = Protocol.angleToShort(a);
-                    s.sndVol[i] = Math.round(255 * (1 - d / Const.HEARING_RANGE));
-                }
+                if (e.stepped && d <= Const.HEARING_RANGE) addSound(s, Protocol.SND_STEP, dx, dy, d, Const.HEARING_RANGE);
+                if (e.hitSound && d <= Const.HIT_HEARING_RANGE) addSound(s, Protocol.SND_HIT, dx, dy, d, Const.HIT_HEARING_RANGE);
             }
         }
         p.conn.send(Protocol.state(s));
+        if (p.invDirty) {
+            p.conn.send(Protocol.inventory(p.inv));
+            p.invDirty = false;
+        }
+    }
+
+    /** Un sonido fuera de la vista llega como sector de 22,5 grados y volumen, nunca como posición. */
+    private static void addSound(Protocol.State s, int kind, float dx, float dy, float d, float range) {
+        if (s.nSnd >= Protocol.MAX_SOUNDS) return;
+        float sector = TWO_PI / 16;
+        float a = Math.round((float) Math.atan2(dy, dx) / sector) * sector;
+        int i = s.nSnd++;
+        s.sndKind[i] = kind;
+        s.sndAngle[i] = Protocol.angleToShort(a);
+        s.sndVol[i] = Math.round(255 * (1 - d / range));
     }
 
     /** Spawn en la periferia para jugadores; en cualquier sitio para bots. */

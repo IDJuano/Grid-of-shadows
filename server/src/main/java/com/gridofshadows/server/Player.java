@@ -1,6 +1,7 @@
 package com.gridofshadows.server;
 
 import com.gridofshadows.common.Const;
+import com.gridofshadows.common.Inventory;
 import com.gridofshadows.common.Protocol;
 
 import java.util.ArrayDeque;
@@ -8,6 +9,8 @@ import java.util.ArrayDeque;
 final class Player extends Entity {
     final Conn conn;
     final String name;
+    final Inventory inv = new Inventory();
+    boolean invDirty;   // hay que reenviarle el inventario
     final ArrayDeque<Protocol.Input> pending = new ArrayDeque<>();
     final Protocol.State out = new Protocol.State(Protocol.MAX_ENTITIES, Protocol.MAX_SOUNDS); // se reutiliza cada tick
     int ackSeq = -1, lastSeq = -1, lastActionTick = -1000;

@@ -1,9 +1,9 @@
 # Grid of Shadows
 
 Supervivencia PvP con visión limitada, mundo de vóxeles destructible y servidor autoritativo en Java.
-Esto es el corte vertical jugable de las **Fases 1 y 2** del TDD: dos o más jugadores (y bots) en el mismo
-mundo, con cono de visión, niebla, oclusión por vóxeles filtrada **en el servidor**, sonido de pasos
-direccional y bloques que se rompen y se colocan.
+Esto es el corte vertical jugable de las **Fases 1 y 2** del TDD más el **primer corte de la Fase 3**: dos o más
+jugadores (y bots) en el mismo mundo, con cono de visión, niebla, oclusión por vóxeles filtrada **en el servidor**,
+sonido de pasos y golpes direccional, recolección de recursos, inventario y construcción con madera.
 
 ## Arranque rápido
 
@@ -16,7 +16,7 @@ Requisitos: JDK 21. El wrapper de Gradle (9.6.1) va incluido; la primera vez des
 ./gradlew check                              # pruebas del núcleo y de la simulación (sin JUnit)
 ```
 
-Controles: **WASD** mover, **ratón** apuntar, **clic** romper, **clic derecho** colocar madera.
+Controles: **WASD** mover, **ratón** apuntar, **clic** golpear (árboles y rocas dan recursos), **clic derecho** construir con madera.
 Un cuadrado ámbar que late es "conectando"; uno rojo, "sin conexión".
 
 ## Módulos
@@ -41,6 +41,25 @@ Un cuadrado ámbar que late es "conectando"; uno rojo, "sin conexión".
   `ackSeq`. Probado contra el servidor real con latencia y con discrepancias.
 - **Mundo:** `byte[32*32*16]` por chunk; la capa z=1 es la que bloquea paso y vista.
 
+## Fase 3, corte 1: recolección e inventario
+
+| Bloque | Golpes a mano | Cada golpe da |
+|---|---|---|
+| Árbol | 4 | 6 de madera |
+| Roca | 5 | 5 de piedra |
+| Madera construida | 6 | nada |
+| Piedra y lecho de roca | no se rompen a mano (Tier 1) | |
+
+- El inventario (24 ranuras, pilas de hasta 500) es **del servidor**: solo se envía a su dueño y el cliente solo lo dibuja.
+  Si el botín no cabe, el golpe se rechaza sin gastar el recurso.
+- Construir con madera cuesta 5 y solo se cobra si el bloque llega a colocarse.
+- La carga frena hasta un 40 % con 400 unidades. El servidor y la predicción del cliente usan la misma fórmula.
+- Los golpes se oyen hasta 16 casillas, fuera de la vista y a través de las paredes: arcos naranjas (los pasos son ámbar).
+  Llegan como sector y volumen, nunca como posición.
+- El HUD (inventario y barra de carga) se dibuja con formas y dígitos de 3 x 5, sin fuentes ni assets, para no arriesgar
+  el arranque en el navegador. La barra se pone roja al acercarse a la carga máxima.
+- Un cuadro blanco resalta la casilla bajo el cursor cuando está al alcance (3,5 casillas).
+
 ## Decisiones y desviaciones del TDD
 
 1. **Vista cenital 2D** (el TDD no fija cámara). El cono y la niebla se dibujan sin stencil ni framebuffers.
@@ -63,16 +82,19 @@ Un cuadrado ámbar que late es "conectando"; uno rojo, "sin conexión".
 
 ## Qué está verificado y qué no
 
-Verificado con JDK 21: `common` (24 comprobaciones) y la simulación del servidor (23, incluyendo anti-wallhack,
-speedhack, acciones, predicción con latencia y divergencia). El cliente y los lanzadores compilan contra stubs con las firmas
-de libGDX y TeaVM, y no generan `invokedynamic`.
+Fases 1 y 2: ejecutadas en local (Gradle, Netty, cliente de escritorio y comunicación cliente-servidor).
 
-**No verificado:** la compilación Gradle completa, la capa Netty, el render con libGDX y la compilación a JS con TeaVM
-(el entorno donde se escribió no alcanza Maven Central). Si algo falla en el primer arranque, lo más probable es la versión de
-gdx-teavm (hay una 1.6.2 etiquetada en su repositorio) o un detalle del plugin de Gradle.
+Fase 3, corte 1, verificada con JDK 21: `common` (34 comprobaciones) y la simulación del servidor (42: anti-wallhack,
+speedhack, recolección, construcción, inventario lleno, carga, sonido de golpes, predicción con latencia y con carga, y
+divergencia). El cliente y los lanzadores compilan contra stubs con las firmas de libGDX y TeaVM y no generan
+`invokedynamic`; **el cliente de este corte aún no se ha ejecutado**.
+
+**No verificado:** el render del HUD y de los nuevos arcos con libGDX, y la compilación a JS con TeaVM de este corte
+(el entorno donde se escribió no alcanza Maven Central).
 
 ## Siguientes pasos
 
-- **Fase 3:** recolección de nodos, inventario en cuadrícula, crafteo Tier 1-2, full loot, persistencia (H2/SQLite con Virtual Threads), HUD con texto.
+- **Fase 3 (lo que falta):** crafteo Tier 1 con barra de acceso rápido (hacha, pico, lanza, antorcha), combate cuerpo a cuerpo y full loot,
+  reaparición de árboles y rocas, persistencia (H2/SQLite con Virtual Threads) y HUD con texto real.
 - **Fase 4:** construcción con integridad estructural (BFS hacia `FOUNDATION`), cerraduras, zonas seguras.
 - **Transversal:** interés por chunks (qué cambios de bloque recibe cada cliente), delta compression, audio real, comprobación de `Origin`.

@@ -23,6 +23,7 @@ public final class SelfTest {
         visibility();
         movement();
         protocol();
+        inventory();
         System.out.println(checks + " comprobaciones, " + failures + " fallos");
         if (failures > 0) System.exit(1);
     }
@@ -106,5 +107,30 @@ public final class SelfTest {
         o = Protocol.decodeServer(Protocol.state(s));
         check(o instanceof Protocol.State t && t.tick == 9 && t.ackSeq == 41 && t.nEnt == 1 && t.entId[0] == 7
             && t.entX[0] == 8.5f && t.nSnd == 1 && t.sndVol[0] == 200, "State");
+    }
+
+    static void inventory() {
+        Inventory inv = new Inventory();
+        check(inv.add(Items.WOOD, 30) == 0 && inv.add(Items.WOOD, 600) == 0, "añadir madera");
+        check(inv.count[0] == 500 && inv.count[1] == 130 && inv.count(Items.WOOD) == 630, "las pilas se llenan hasta el máximo y se abre otra");
+        check(!inv.remove(Items.WOOD, 1000) && inv.count(Items.WOOD) == 630, "quitar de más no cambia nada");
+        check(inv.remove(Items.WOOD, 200) && inv.count(Items.WOOD) == 430 && inv.item[1] == Items.NONE, "quitar vacía las últimas pilas");
+        check(inv.load() == 430, "peso total");
+        Inventory full = new Inventory();
+        check(full.add(Items.STONE, Const.INV_SLOTS * 500 + 7) == 7 && full.space(Items.WOOD) == 0, "inventario lleno devuelve el sobrante");
+        check(near(Inventory.speedFactor(0), 1f, 1e-6f) && near(Inventory.speedFactor(Const.LOAD_CAPACITY), Const.MIN_SPEED_FACTOR, 1e-6f)
+            && near(Inventory.speedFactor(5 * Const.LOAD_CAPACITY), Const.MIN_SPEED_FACTOR, 1e-6f)
+            && Inventory.speedFactor(100) > Inventory.speedFactor(200), "la carga frena de forma monótona y con tope");
+        check(Block.hitsToBreak(Block.TREE) == 4 && Block.hitsToBreak(Block.STONE) == 0 && Block.hitsToBreak(Block.BEDROCK) == 0
+            && Block.dropItem(Block.ROCK) == Items.STONE && Block.dropItem(Block.WOOD) == Items.NONE, "tabla de bloques");
+
+        Object o = Protocol.decodeServer(Protocol.inventory(inv));
+        check(o instanceof Inventory r && r.count(Items.WOOD) == 430 && r.item[0] == Items.WOOD && r.load() == 430, "Inventory ida y vuelta");
+
+        VoxelWorld w = new VoxelWorld(32, 32);
+        Predictor p = new Predictor(w, 5.5f, 5.5f);
+        p.setLoad(Const.LOAD_CAPACITY);
+        p.step(1, 0, 0f);
+        check(near(p.me.x - 5.5f, Const.PLAYER_SPEED * Const.MIN_SPEED_FACTOR * Const.TICK_DT, 1e-4f), "el Predictor aplica la carga");
     }
 }
