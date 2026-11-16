@@ -1,0 +1,14 @@
+[Unit]
+Description=Grid of Shadows (servidor autoritativo)
+After=network.target
+
+[Service]
+User=gos
+WorkingDirectory=/opt/gos
+# Sin bots en producción; escucha solo en localhost porque Caddy va delante
+ExecStart=/opt/gos/server/bin/server --host=127.0.0.1 --port=8080 --bots=0 --seed=1337
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

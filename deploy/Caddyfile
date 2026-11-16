@@ -1,0 +1,5 @@
+# Sustituye play.example.com por tu dominio (registro A hacia la IP pública de la instancia).
+# Caddy obtiene y renueva el certificado solo, y reenvía el WebSocket al servidor Java.
+play.example.com {
+	reverse_proxy /ws 127.0.0.1:8080
+}
